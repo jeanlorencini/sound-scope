@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>SoundScope</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <img src="../../icons/icon32.png" alt="" width="20" height="20" />
+        <span>SoundScope</span>
+      </div>
+      <button id="sitesToggle" class="icon-btn" type="button" aria-label="Sites salvos" title="Sites salvos" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
+      </button>
+    </header>
+
+    <!-- Controle da aba atual -->
+    <main id="mainView">
+      <section class="site" aria-live="polite">
+        <img id="favicon" class="favicon" alt="" width="20" height="20" hidden />
+        <div class="site-text">
+          <strong id="host">—</strong>
+          <span id="status" class="muted-text">Carregando…</span>
+        </div>
+      </section>
+
+      <div id="controls">
+        <div class="segmented" role="radiogroup" aria-label="Aplicar volume a">
+          <button type="button" role="radio" data-scope="site" aria-checked="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" /></svg>
+            Site inteiro
+          </button>
+          <button type="button" role="radio" data-scope="tab" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" /><path d="M3 9.5h18M8 5v4.5" /></svg>
+            Só esta aba
+          </button>
+        </div>
+        <p id="scopeHint" class="hint"></p>
+
+        <div class="dial">
+          <button id="mute" class="mute" type="button" aria-pressed="false" title="Silenciar (M)">
+            <svg class="ico-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" /></svg>
+            <svg class="ico-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill" /><path d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
+          </button>
+          <output id="value" class="value" for="slider">100<small>%</small></output>
+        </div>
+
+        <input id="slider" class="slider" type="range" min="0" max="100" step="1" value="100" aria-label="Volume" />
+
+        <div class="presets" role="group" aria-label="Atalhos de volume">
+          <button type="button" data-preset="10">10</button>
+          <button type="button" data-preset="25">25</button>
+          <button type="button" data-preset="50">50</button>
+          <button type="button" data-preset="75">75</button>
+          <button type="button" data-preset="100">100</button>
+        </div>
+
+        <div id="override" class="notice" hidden>
+          <span>Esta aba tem volume próprio, que vale mais que o do site.</span>
+          <button id="clearTabFromSite" type="button" class="link">Usar o do site</button>
+        </div>
+
+        <footer class="foot">
+          <span id="ruleLabel" class="muted-text"></span>
+          <button id="reset" type="button" class="link" hidden>Redefinir</button>
+        </footer>
+      </div>
+
+      <div id="unsupported" class="empty" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M6 6l12 12" /></svg>
+        <p>O Chrome não permite controlar o som desta página.</p>
+        <span class="muted-text">Funciona em sites comuns (http/https).</span>
+      </div>
+    </main>
+
+    <!-- Sites salvos -->
+    <section id="sitesView" hidden>
+      <h2>Sites salvos</h2>
+      <p class="muted-text">O volume vale em todas as abas desses sites.</p>
+      <ul id="sitesList" class="sites"></ul>
+      <div id="sitesEmpty" class="empty small" hidden>
+        <p>Nenhum site salvo ainda.</p>
+        <span class="muted-text">Ajuste o volume em “Site inteiro” para salvar.</span>
+      </div>
+    </section>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
