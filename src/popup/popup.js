@@ -1,4 +1,5 @@
 import { DEFAULT_RULE, clampVolume, toggleMuteRule } from '../lib/rules.js';
+import { describeCommands } from '../lib/commands.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -30,6 +31,10 @@ const el = {
   defaultSlider: $('defaultSlider'),
   defaultValue: $('defaultValue'),
   defaultReset: $('defaultReset'),
+  shortcutsToggle: $('shortcutsToggle'),
+  shortcutsView: $('shortcutsView'),
+  shortcutsList: $('shortcutsList'),
+  changeShortcuts: $('changeShortcuts'),
 };
 
 const send = (msg) => chrome.runtime.sendMessage(msg);
@@ -168,7 +173,14 @@ el.clearTabFromSite.addEventListener('click', async () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (el.controls.hidden || !el.sitesView.hidden || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'Escape' && view !== 'main') {
+    e.preventDefault();
+    const opener = toggles[view];
+    showView('main');
+    opener.focus();
+    return;
+  }
+  if (el.controls.hidden || view !== 'main' || e.altKey || e.ctrlKey || e.metaKey) return;
   if (e.target instanceof Element && e.target.closest('#playing')) return; // teclas da lista são da lista
   if (e.key === 'm' || e.key === 'M') {
     e.preventDefault();
@@ -250,22 +262,60 @@ el.defaultReset.addEventListener('click', () => {
   el.defaultSlider.focus();
 });
 
-el.sitesToggle.addEventListener('click', async () => {
-  const open = el.sitesView.hidden;
-  el.sitesView.hidden = !open;
-  el.mainView.hidden = open;
-  el.sitesToggle.setAttribute('aria-expanded', String(open));
-  if (open) {
-    const res = await send({ type: 'listSites' });
+// ---- Seus atalhos ----------------------------------------------------------------
+function renderShortcuts(list) {
+  const rows = describeCommands(list).flatMap(({ description, keys }) => {
+    const dt = document.createElement('dt');
+    dt.textContent = description;
+    const dd = document.createElement('dd');
+    if (keys.length) {
+      keys.forEach((k, i) => {
+        if (i) dd.append('+');
+        const kbd = document.createElement('kbd');
+        kbd.textContent = k;
+        dd.append(kbd);
+      });
+    } else {
+      dd.className = 'muted-text';
+      dd.textContent = 'Não definido';
+    }
+    return [dt, dd];
+  });
+  el.shortcutsList.replaceChildren(...rows);
+}
+
+el.changeShortcuts.addEventListener('click', () => {
+  // Link para chrome:// não abre a partir do popup: precisa de tabs.create.
+  chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+});
+
+// ---- Vistas (só uma aberta por vez) ---------------------------------------------
+const views = { main: el.mainView, sites: el.sitesView, shortcuts: el.shortcutsView };
+const toggles = { sites: el.sitesToggle, shortcuts: el.shortcutsToggle };
+let view = 'main';
+
+async function showView(next) {
+  const from = view;
+  view = next;
+  for (const [name, node] of Object.entries(views)) node.hidden = name !== next;
+  for (const [name, btn] of Object.entries(toggles)) btn.setAttribute('aria-expanded', String(name === next));
+  if (next === 'sites') {
+    const res = await send({ type: 'listSites' }).catch(() => null);
     renderSites(res && res.ok ? res.sites : []);
     renderDefault(res && res.ok ? res.defaultVolume : null);
-  } else if (defaultChanged) {
+  } else if (next === 'shortcuts') {
+    renderShortcuts(await chrome.commands.getAll().catch(() => []));
+  } else if (from === 'sites' && defaultChanged) {
     defaultChanged = false;
     await refresh();
-  } else {
+  } else if (st) {
     selectScope(scope);
   }
-});
+}
+
+for (const [name, btn] of Object.entries(toggles)) {
+  btn.addEventListener('click', () => showView(view === name ? 'main' : name));
+}
 
 // ---- Tocando agora -------------------------------------------------------------
 const ICON_SOUND =

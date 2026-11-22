@@ -50,3 +50,22 @@ test('CA3.10: manifesto tem os comandos com descrição em pt-BR e no máximo 4 
   assert.equal(cmds['toggle-mute'].suggested_key.default, 'Alt+Shift+M');
   assert.deepEqual(manifest.permissions, ['storage', 'scripting'], 'nenhuma permissão nova');
 });
+
+test('CA6.1: teclas divididas em partes, setas como ↑/↓ e "Não definido" quando vazio', () => {
+  assert.deepEqual(shortcutParts('Alt+Shift+Up'), ['Alt', 'Shift', '↑']);
+  assert.deepEqual(shortcutParts('Alt+Shift+Down'), ['Alt', 'Shift', '↓']);
+  assert.deepEqual(shortcutParts('⌥⇧M'), ['⌥', '⇧', 'M']);
+  assert.deepEqual(shortcutParts(''), []);
+  assert.deepEqual(shortcutParts(undefined), []);
+  const rows = describeCommands([
+    { name: '_execute_action', description: '', shortcut: 'Alt+Shift+V' },
+    { name: 'volume-up', description: 'Aumentar o volume do site (+10)', shortcut: 'Alt+Shift+Up' },
+    { name: 'volume-down', description: 'Diminuir o volume do site (−10)', shortcut: '' },
+  ]);
+  assert.deepEqual(rows.map((r) => r.name), ['_execute_action', 'volume-up', 'volume-down', 'toggle-mute']);
+  assert.equal(rows[0].description, 'Abrir o SoundScope', 'descrição vazia cai para o texto em pt-BR');
+  assert.deepEqual(rows[0].keys, ['Alt', 'Shift', 'V']);
+  assert.deepEqual(rows[2].keys, [], 'conflito ou removida pelo usuário');
+  assert.deepEqual(rows[3].keys, [], 'ausente da lista');
+  assert.deepEqual(describeCommands(undefined).length, 4);
+});

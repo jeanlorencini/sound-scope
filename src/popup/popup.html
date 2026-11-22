@@ -12,9 +12,14 @@
         <img src="../../icons/icon32.png" alt="" width="20" height="20" />
         <span>SoundScope</span>
       </div>
-      <button id="sitesToggle" class="icon-btn" type="button" aria-label="Sites salvos e volume padrão" title="Sites salvos e volume padrão" aria-expanded="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
-      </button>
+      <div class="top-actions">
+        <button id="shortcutsToggle" class="icon-btn" type="button" aria-label="Seus atalhos" title="Seus atalhos" aria-expanded="false" aria-controls="shortcutsView">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5" /><path d="M6.5 10h1M10.5 10h1M14.5 10h1M8 14h8" /></svg>
+        </button>
+        <button id="sitesToggle" class="icon-btn" type="button" aria-label="Sites salvos e volume padrão" title="Sites salvos e volume padrão" aria-expanded="false" aria-controls="sitesView">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
+        </button>
+      </div>
     </header>
 
     <!-- Controle da aba atual -->
@@ -87,7 +92,7 @@
     </main>
 
     <!-- Sites salvos -->
-    <section id="sitesView" hidden>
+    <section id="sitesView" class="view" hidden>
       <div class="default-box">
         <div class="default-head">
           <label for="defaultSlider">Volume padrão</label>
@@ -105,6 +110,14 @@
         <p>Nenhum site salvo ainda.</p>
         <span class="muted-text">Ajuste o volume em “Site inteiro” para salvar.</span>
       </div>
+    </section>
+
+    <!-- Seus atalhos -->
+    <section id="shortcutsView" class="view" aria-labelledby="shortcutsTitle" hidden>
+      <h2 id="shortcutsTitle">Seus atalhos</h2>
+      <p class="muted-text">Funcionam com o popup fechado; o resultado aparece no ícone.</p>
+      <dl id="shortcutsList" class="shortcuts"></dl>
+      <button id="changeShortcuts" type="button" class="secondary-btn">Alterar atalhos</button>
     </section>
 
     <script type="module" src="popup.js"></script>

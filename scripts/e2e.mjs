@@ -96,6 +96,25 @@ try {
   assert.equal(await seen(b1), 0.8);
   step('silenciar zera o som do site');
 
+  // 4b) CA1.6: a página tenta desfazer o mudo forjando o evento do canal (e tenta ler o ganho)
+  await b1.evaluate(() => {
+    for (const t of [document, window, document.documentElement]) {
+      t.dispatchEvent(new CustomEvent('soundscope:gain', { detail: 1, bubbles: true }));
+    }
+    document.dispatchEvent(new CustomEvent('soundscope:hello'));
+    window.__leak = [];
+    document.addEventListener('soundscope:gain', (e) => window.__leak.push(e.detail));
+  });
+  await settle();
+  assert.equal(await real(b1), 0, 'o mudo do usuário continua valendo');
+  await send({ type: 'set', tabId: t3, scope: 'site', rule: { volume: 30, muted: false } });
+  await settle();
+  assert.equal(await real(b1), 0.24, 'o canal legítimo continua funcionando');
+  assert.deepEqual(await b1.evaluate(() => window.__leak), [], 'a página não lê o ganho');
+  await send({ type: 'set', tabId: t3, scope: 'site', rule: { volume: 60, muted: true } });
+  await settle();
+  step('evento soundscope:gain forjado pela página é ignorado');
+
   // 5) Página altera o próprio volume depois: continua escalado
   await a1.evaluate(() => (document.getElementById('a').volume = 0.6));
   assert.equal(await real(a1), 0.3);
