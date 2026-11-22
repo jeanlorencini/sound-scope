@@ -2,6 +2,8 @@
 //  • Regras de site: chrome.storage.local  { sites: { [host]: { volume, muted, updatedAt } } }
 //  • Regras de aba:  chrome.storage.session { tabs: { [tabId]: { volume, muted } } }
 //    (valem só enquanto a aba existir, mesmo que ela navegue para outro domínio)
+//  • Abas silenciadas por "Silenciar as outras": chrome.storage.session
+//    { silenced: { [tabId]: regraDeAbaAnterior | null } } (para desfazer exatamente)
 import { badgeText, gainOf, resolveRule, sanitizeRule, siteKey, titleText } from './lib/rules.js';
 import { applyCommand } from './lib/commands.js';
 
@@ -11,13 +13,15 @@ const BADGE_MUTED_COLOR = '#e5484d';
 
 // ---- Estado (cache em memória + persistência com debounce) -----------------
 let statePromise = null;
+const isObj = (v) => Boolean(v) && typeof v === 'object';
 const loadState = () =>
   (statePromise ??= Promise.all([
     chrome.storage.local.get('sites'),
-    chrome.storage.session.get('tabs'),
+    chrome.storage.session.get(['tabs', 'silenced']),
   ]).then(([local, session]) => ({
-    sites: local.sites && typeof local.sites === 'object' ? local.sites : {},
-    tabs: session.tabs && typeof session.tabs === 'object' ? session.tabs : {},
+    sites: isObj(local.sites) ? local.sites : {},
+    tabs: isObj(session.tabs) ? session.tabs : {},
+    silenced: isObj(session.silenced) ? session.silenced : {},
   })));
 
 const timers = {};
@@ -30,6 +34,7 @@ const schedulePersist = (area, key, getValue) => {
 };
 const persistSites = (state) => schedulePersist('local', 'sites', () => state.sites);
 const persistTabs = (state) => schedulePersist('session', 'tabs', () => state.tabs);
+const persistSilenced = (state) => schedulePersist('session', 'silenced', () => state.silenced);
 
 const stripMeta = (stored) => (stored ? { volume: stored.volume, muted: stored.muted } : null);
 
@@ -91,6 +96,54 @@ async function ensureInjected(tabId) {
   }
 }
 
+// ---- Tocando agora -------------------------------------------------------------
+// O usuário mexeu na regra da aba por conta própria: o "desfazer" não a sobrescreve mais.
+function forgetSilenced(state, tabId) {
+  if (Object.hasOwn(state.silenced, tabId)) {
+    delete state.silenced[tabId];
+    persistSilenced(state);
+  }
+}
+
+// Silencia só pelo ganho do SoundScope (regra de aba), guardando a regra anterior.
+function silenceTab(state, tabId, volume) {
+  state.silenced[tabId] = state.tabs[tabId] ?? null;
+  state.tabs[tabId] = { volume, muted: true };
+}
+
+function restoreTab(state, tabId) {
+  const previous = state.silenced[tabId];
+  delete state.silenced[tabId];
+  if (previous) state.tabs[tabId] = previous;
+  else delete state.tabs[tabId];
+}
+
+// Abas tocando (todas as janelas normais) + as silenciadas por nós, sem a aba ativa.
+async function playingTabs(state, activeTabId) {
+  const audible = await chrome.tabs.query({ audible: true, windowType: 'normal' });
+  const seen = new Set(audible.map((t) => t.id));
+  const extra = await Promise.all(
+    Object.keys(state.silenced)
+      .map(Number)
+      .filter((id) => !seen.has(id))
+      .map(getTab)
+  );
+  return [...audible, ...extra.filter(Boolean)].filter((t) => t.id != null && t.id !== activeTabId);
+}
+
+const playingItem = (state, tab) => {
+  const { host, effective } = describe(state, tab.id, tab.url);
+  return {
+    tabId: tab.id,
+    title: tab.title || '',
+    host,
+    favIconUrl: tab.favIconUrl || '',
+    controllable: Boolean(host),
+    silenced: Object.hasOwn(state.silenced, tab.id),
+    effectiveRule: effective.rule,
+  };
+};
+
 // ---- Mensagens ---------------------------------------------------------------
 async function stateFor(tabId) {
   const state = await loadState();
@@ -126,6 +179,7 @@ const handlers = {
     if (scope === 'tab') {
       state.tabs[tabId] = clean;
       persistTabs(state);
+      forgetSilenced(state, tabId);
       await applyToTab(state, tab);
     } else {
       const host = siteKey(tab.url);
@@ -144,6 +198,7 @@ const handlers = {
     if (scope === 'tab') {
       delete state.tabs[tabId];
       persistTabs(state);
+      forgetSilenced(state, tabId);
       await applyToTab(state, tab);
     } else {
       const host = siteKey(tab.url);
@@ -154,6 +209,42 @@ const handlers = {
       }
     }
     return stateFor(tabId);
+  },
+
+  async listPlaying({ activeTabId }) {
+    const state = await loadState();
+    const tabs = await playingTabs(state, activeTabId);
+    return { ok: true, items: tabs.map((t) => playingItem(state, t)) };
+  },
+
+  async silenceOthers({ activeTabId }) {
+    const state = await loadState();
+    const tabs = await playingTabs(state, activeTabId);
+    const targets = tabs.filter((t) => {
+      const item = playingItem(state, t);
+      return item.controllable && !item.silenced;
+    });
+    for (const t of targets) silenceTab(state, t.id, describe(state, t.id, t.url).effective.rule.volume);
+    if (targets.length) {
+      persistTabs(state);
+      persistSilenced(state);
+    }
+    await Promise.all(targets.map((t) => applyToTab(state, t)));
+    return { ok: true, count: targets.length, ...(await handlers.listPlaying({ activeTabId })) };
+  },
+
+  async toggleTabMute({ tabId }) {
+    const state = await loadState();
+    const tab = await getTab(tabId);
+    if (!tab) return { ok: false, error: 'tab-not-found' };
+    const { host, effective } = describe(state, tab.id, tab.url);
+    if (!host) return { ok: false, error: 'not-controllable' };
+    if (Object.hasOwn(state.silenced, tab.id)) restoreTab(state, tab.id);
+    else silenceTab(state, tab.id, effective.rule.volume);
+    persistTabs(state);
+    persistSilenced(state);
+    await applyToTab(state, tab);
+    return { ok: true, item: playingItem(state, tab) };
   },
 
   async listSites() {
@@ -220,11 +311,17 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     delete state.tabs[tabId];
     persistTabs(state);
   }
+  forgetSilenced(state, tabId);
 });
 
 // Pré-renderização/troca instantânea substitui o id da aba: a regra acompanha.
 chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
   const state = await loadState();
+  if (Object.hasOwn(state.silenced, removedTabId)) {
+    state.silenced[addedTabId] = state.silenced[removedTabId];
+    delete state.silenced[removedTabId];
+    persistSilenced(state);
+  }
   if (state.tabs[removedTabId]) {
     state.tabs[addedTabId] = state.tabs[removedTabId];
     delete state.tabs[removedTabId];

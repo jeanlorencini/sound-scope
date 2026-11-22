@@ -22,6 +22,11 @@ const el = {
   sitesView: $('sitesView'),
   sitesList: $('sitesList'),
   sitesEmpty: $('sitesEmpty'),
+  playing: $('playing'),
+  playingList: $('playingList'),
+  playingEmpty: $('playingEmpty'),
+  playingLive: $('playingLive'),
+  silenceOthers: $('silenceOthers'),
 };
 
 const send = (msg) => chrome.runtime.sendMessage(msg);
@@ -148,6 +153,7 @@ el.clearTabFromSite.addEventListener('click', async () => {
 
 document.addEventListener('keydown', (e) => {
   if (el.controls.hidden || !el.sitesView.hidden || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.target instanceof Element && e.target.closest('#playing')) return; // teclas da lista são da lista
   if (e.key === 'm' || e.key === 'M') {
     e.preventDefault();
     toggleMute();
@@ -212,6 +218,107 @@ el.sitesToggle.addEventListener('click', async () => {
   }
 });
 
+// ---- Tocando agora -------------------------------------------------------------
+const ICON_SOUND =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill"/><path d="M15.5 9a4 4 0 0 1 0 6"/></svg>';
+const ICON_MUTED =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+const ICON_TAB =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9.5h18"/></svg>';
+
+const tabLabel = (item) => item.title || (item.host ? hostLabel(item.host) : 'Aba sem título');
+
+function playingRow(item) {
+  const li = document.createElement('li');
+  const icon = document.createElement('span');
+  icon.className = 'play-icon';
+  if (/^(https?:|data:image\/)/.test(item.favIconUrl)) {
+    const img = document.createElement('img');
+    img.src = item.favIconUrl;
+    img.alt = '';
+    img.width = img.height = 16;
+    img.addEventListener('error', () => (icon.innerHTML = ICON_TAB), { once: true });
+    icon.append(img);
+  } else {
+    icon.innerHTML = ICON_TAB;
+  }
+
+  const text = document.createElement('span');
+  text.className = 'play-text';
+  const title = document.createElement('span');
+  title.className = 'play-title';
+  title.textContent = tabLabel(item);
+  title.title = tabLabel(item);
+  const host = document.createElement('span');
+  host.className = 'muted-text play-host';
+  host.textContent = item.controllable ? (item.silenced ? `${hostLabel(item.host)} · silenciada` : hostLabel(item.host)) : 'Aba protegida';
+  text.append(title, host);
+
+  let action;
+  if (item.controllable) {
+    action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'icon-btn play-toggle';
+    action.dataset.tabId = String(item.tabId);
+    action.setAttribute('aria-pressed', String(item.silenced));
+    const label = item.silenced ? `Ativar som de ${tabLabel(item)}` : `Silenciar ${tabLabel(item)}`;
+    action.setAttribute('aria-label', label);
+    action.title = label;
+    action.innerHTML = item.silenced ? ICON_MUTED : ICON_SOUND;
+    action.addEventListener('click', async () => {
+      const res = await send({ type: 'toggleTabMute', tabId: item.tabId }).catch(() => null);
+      if (res && res.ok) {
+        el.playingLive.textContent = res.item.silenced ? `${tabLabel(item)} silenciada` : `Som de ${tabLabel(item)} ativado`;
+      }
+      await loadPlaying();
+    });
+  } else {
+    action = document.createElement('span');
+    action.className = 'muted-text play-na';
+    action.textContent = 'não dá para controlar';
+  }
+  li.append(icon, text, action);
+  return li;
+}
+
+function renderPlaying(items) {
+  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.tabId;
+  el.playingList.replaceChildren(...items.map(playingRow));
+  el.playingList.hidden = items.length === 0;
+  const pending = items.filter((i) => i.controllable && !i.silenced).length;
+  el.silenceOthers.disabled = pending === 0;
+  el.playingEmpty.hidden = pending > 0;
+  el.playingEmpty.textContent = items.length === 0 ? 'Nenhuma outra aba está tocando' : 'Nenhuma outra aba para silenciar';
+  if (focused) {
+    const again = el.playingList.querySelector(`[data-tab-id="${focused}"]`);
+    if (again) again.focus();
+  }
+}
+
+async function loadPlaying() {
+  const res = await send({ type: 'listPlaying', activeTabId: tabId }).catch(() => null);
+  renderPlaying(res && res.ok ? res.items : []);
+}
+
+el.silenceOthers.addEventListener('click', async () => {
+  const res = await send({ type: 'silenceOthers', activeTabId: tabId }).catch(() => null);
+  if (!res || !res.ok) return;
+  el.playingLive.textContent = res.count === 1 ? '1 aba silenciada' : `${res.count} abas silenciadas`;
+  if (document.activeElement === el.silenceOthers) el.playingList.querySelector('button')?.focus();
+  renderPlaying(res.items);
+});
+
+// Abas começam ou param de tocar com o popup aberto.
+let playingTimer = 0;
+const schedulePlaying = () => {
+  clearTimeout(playingTimer);
+  playingTimer = setTimeout(loadPlaying, 250);
+};
+chrome.tabs.onUpdated.addListener((_id, change) => {
+  if ('audible' in change || 'title' in change || 'favIconUrl' in change) schedulePlaying();
+});
+chrome.tabs.onRemoved.addListener(schedulePlaying);
+
 // ---- Início ------------------------------------------------------------------
 async function refresh() {
   const res = await send({ type: 'getState', tabId });
@@ -231,6 +338,7 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return showUnsupported();
   tabId = tab.id;
+  loadPlaying();
 
   let label = tab.title || '';
   try {

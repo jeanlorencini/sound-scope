@@ -296,3 +296,90 @@ test('CA3.8/3.9: cinco atalhos seguidos acumulam (40 → 90) sem popup, e o esta
   const st = await bg.call({ type: 'getState', tabId: 3 });
   assert.deepEqual(st.effective, { source: 'site', rule: { volume: 90, muted: false } });
 });
+
+// ---- Tocando agora (R4) --------------------------------------------------------
+
+const PLAYING = () => [
+  { id: 1, url: 'https://www.youtube.com/watch?v=a', title: 'YouTube — Música', hasScript: true, audible: true, active: true },
+  { id: 2, url: 'https://youtube.com/watch?v=b', title: 'Outro vídeo', hasScript: true, audible: true },
+  { id: 3, url: 'https://open.spotify.com/', title: 'Spotify', favIconUrl: 'https://open.spotify.com/f.ico', hasScript: true, audible: true },
+  { id: 4, url: 'chrome://settings', title: 'Configurações', hasScript: false, audible: true },
+  { id: 5, url: 'https://news.example/', title: 'Notícias', hasScript: true },
+];
+
+test('CA4.1/4.5: lista as abas tocando, sem a aba ativa', async () => {
+  const bg = await boot(PLAYING());
+  const res = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.deepEqual(res.items.map((i) => i.tabId), [2, 3, 4]);
+  assert.deepEqual(res.items[1], {
+    tabId: 3,
+    title: 'Spotify',
+    host: 'open.spotify.com',
+    favIconUrl: 'https://open.spotify.com/f.ico',
+    controllable: true,
+    silenced: false,
+    effectiveRule: { volume: 100, muted: false },
+  });
+  assert.equal(res.items[2].controllable, false);
+  const empty = await boot([{ id: 9, url: 'https://a.com/', audible: true, hasScript: true }]);
+  assert.deepEqual((await empty.call({ type: 'listPlaying', activeTabId: 9 })).items, []);
+});
+
+test('CA4.3/4.4: "Silenciar as outras" cria só regras de aba, mantém a ativa e põe × no selo', async () => {
+  const local = {};
+  const session = {};
+  const tabs = PLAYING();
+  const bg = await boot(tabs, { local, session });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 60 } });
+  const res = await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(res.count, 2);
+  assert.deepEqual(bg.gains(), { 2: 0, 3: 0 });
+  assert.equal(bg.badges[2], '×');
+  assert.equal(bg.badges[3], '×');
+  assert.equal(bg.badges[1], undefined, 'a aba ativa não muda');
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é usado');
+  // O Chrome tira as abas silenciadas de `audible`; elas continuam na lista.
+  tabs[1].audible = false;
+  tabs[2].audible = false;
+  const list = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.deepEqual(list.items.filter((i) => i.silenced).map((i) => i.tabId), [2, 3]);
+  await wait(260);
+  assert.deepEqual(Object.keys(local.sites), ['open.spotify.com']);
+  assert.deepEqual(local.sites['open.spotify.com'].volume, 60, 'regra de site intacta');
+  assert.deepEqual(session.tabs, { 2: { volume: 100, muted: true }, 3: { volume: 60, muted: true } });
+  assert.deepEqual(session.silenced, { 2: null, 3: null });
+  // Clicar de novo não silencia em dobro.
+  assert.equal((await bg.call({ type: 'silenceOthers', activeTabId: 1 })).count, 0);
+});
+
+test('CA4.2: alternar uma aba silenciada restaura exatamente a regra anterior', async () => {
+  const bg = await boot(PLAYING());
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 35 } });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(bg.gains()[2], 0);
+  let r = await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.equal(r.item.silenced, false);
+  assert.equal(bg.gains()[2], 0.35);
+  let st = await bg.call({ type: 'getState', tabId: 2 });
+  assert.deepEqual(st.tabRule, { volume: 35, muted: false });
+
+  // A aba 3 não tinha regra de aba: desfazer remove a regra criada.
+  await bg.call({ type: 'toggleTabMute', tabId: 3 });
+  st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.equal(st.tabRule, null, 'sem regra de aba antes, sem regra depois');
+  assert.equal(bg.gains()[3], 1);
+  r = await bg.call({ type: 'toggleTabMute', tabId: 3 });
+  assert.equal(r.item.silenced, true);
+  assert.equal(bg.gains()[3], 0);
+  assert.equal((await bg.call({ type: 'toggleTabMute', tabId: 4 })).ok, false);
+});
+
+test('aba silenciada fechada sai da lista; mexer na regra da aba cancela o desfazer', async () => {
+  const session = {};
+  const bg = await boot(PLAYING(), { session });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  await bg.chrome.tabs.onRemoved.fire(3);
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 80 } });
+  await wait(260);
+  assert.deepEqual(session.silenced, {});
+});
