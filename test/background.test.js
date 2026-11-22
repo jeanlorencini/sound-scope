@@ -386,6 +386,26 @@ test('aba silenciada fechada sai da lista; mexer na regra da aba cancela o desfa
   assert.deepEqual(session.silenced, {});
 });
 
+test('M1: atalho numa aba silenciada vira a nova regra e cancela o desfazer', async () => {
+  const session = {};
+  const tabs = PLAYING();
+  const bg = await boot(tabs, { session });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(bg.gains()[2], 0);
+  await bg.command('volume-up', { id: 2, url: tabs[1].url });
+  assert.ok(bg.gains()[2] > 0, 'o atalho devolve o som');
+  const list = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.equal(list.items.find((i) => i.tabId === 2).silenced, false);
+  const st = await bg.call({ type: 'getState', tabId: 2 });
+  const rule = st.tabRule;
+  // Alternar agora silencia de novo (não restaura a regra antiga por cima da do atalho).
+  const r = await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.equal(r.item.silenced, true);
+  await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.deepEqual((await bg.call({ type: 'getState', tabId: 2 })).tabRule, rule);
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é usado');
+});
+
 // ---- Volume padrão (R5) --------------------------------------------------------
 
 test('CA5.3/5.5: mudar o padrão aplica na hora só às abas sem regra', async () => {

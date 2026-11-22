@@ -386,6 +386,9 @@ function renderPlaying(items) {
   el.playingList.hidden = items.length === 0;
   const pending = items.filter((i) => i.controllable && !i.silenced).length;
   el.silenceOthers.disabled = pending === 0;
+  // A explicação só descreve o botão quando ele está desabilitado (oculta, ainda seria lida).
+  if (pending === 0) el.silenceOthers.setAttribute('aria-describedby', 'playingEmpty');
+  else el.silenceOthers.removeAttribute('aria-describedby');
   el.playingEmpty.hidden = pending > 0;
   el.playingEmpty.textContent = items.length === 0 ? 'Nenhuma outra aba está tocando' : 'Nenhuma outra aba para silenciar';
   if (focused) {

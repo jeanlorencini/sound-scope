@@ -326,6 +326,8 @@ async function runCommand(command, tab) {
   if (tabRule) {
     state.tabs[tab.id] = next;
     persistTabs(state);
+    forgetSilenced(state, tab.id); // o atalho vira a nova regra: o "desfazer" não a sobrescreve
+
     await applyToTab(state, tab);
   } else {
     state.sites[host] = { ...next, updatedAt: Date.now() };
