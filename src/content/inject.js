@@ -4,7 +4,9 @@
 //    O getter de `volume` continua devolvendo o valor que a página definiu,
 //    então os controles do player do site não "pulam".
 //  • Web Audio: conexões ao destino passam por um GainNode por contexto.
-// Recebe o fator do script isolado (bridge.js) por um CustomEvent no document.
+// Recebe o fator do script isolado (bridge.js) só por um nó privado (fora do DOM),
+// entregue uma única vez num handshake em document_start. Eventos que a página
+// dispara no document, no window ou em outros nós são ignorados.
 (() => {
   'use strict';
 
@@ -14,6 +16,25 @@
 
   const EVT_GAIN = 'soundscope:gain';
   const EVT_HELLO = 'soundscope:hello';
+  const EVT_CHANNEL = 'soundscope:channel';
+  const EVT_READY = 'soundscope:ready';
+
+  // Nativos guardados antes de qualquer script da página: um patch posterior não intercepta o canal.
+  const getterOf = (proto, name) => {
+    for (let p = proto; p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, name);
+      if (d) return d.get;
+    }
+  };
+  const ET = window.EventTarget && window.EventTarget.prototype;
+  const nativeOn = ET && ET.addEventListener;
+  const nativeOff = ET && ET.removeEventListener;
+  const nativeDispatch = ET && ET.dispatchEvent;
+  const NodeCtor = window.Node;
+  const CustomEventCtor = window.CustomEvent;
+  const relatedTargetOf = window.MouseEvent && getterOf(window.MouseEvent.prototype, 'relatedTarget');
+  const detailOf = CustomEventCtor && getterOf(CustomEventCtor.prototype, 'detail');
+  if (!nativeOn || !NodeCtor || !relatedTargetOf || !detailOf) return;
 
   const MediaProto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
   const volumeDesc = MediaProto && Object.getOwnPropertyDescriptor(MediaProto, 'volume');
@@ -183,13 +204,37 @@
   };
 
   // ---- Canal com o script isolado ----------------------------------------
-  document.addEventListener(EVT_GAIN, (event) => {
-    const next = event.detail;
+  const onGain = (event) => {
+    let next;
+    try {
+      next = detailOf.call(event);
+    } catch {
+      return;
+    }
     if (typeof next !== 'number' || !(next >= 0 && next <= 1) || next === gain) return;
     gain = next;
     applyAll();
     applyWebAudio();
-  });
+  };
 
-  document.dispatchEvent(new CustomEvent(EVT_HELLO));
+  // Aceita só a primeira oferta de canal (MouseEvent com relatedTarget = nó privado).
+  let channel = null;
+  const onOffer = (event) => {
+    if (channel) return;
+    let node;
+    try {
+      node = relatedTargetOf.call(event);
+    } catch {
+      return;
+    }
+    if (!(node instanceof NodeCtor)) return;
+    channel = node;
+    nativeOff.call(document, EVT_CHANNEL, onOffer, true);
+    nativeOn.call(node, EVT_GAIN, onGain);
+    nativeDispatch.call(node, new CustomEventCtor(EVT_READY));
+  };
+  nativeOn.call(document, EVT_CHANNEL, onOffer, true);
+
+  // bridge.js pode já estar carregado: ele responde ao hello com a oferta do canal.
+  nativeDispatch.call(document, new CustomEventCtor(EVT_HELLO));
 })();

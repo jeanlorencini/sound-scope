@@ -7,6 +7,7 @@
   --accent: #536dfe;
   --accent-2: #8a5cf6;
   --accent-soft: rgba(83, 109, 254, 0.12);
+  --accent-text: #3b55e6; /* texto em azul: ≥ 4,5:1 sobre --bg, --surface e --accent-soft */
   --danger: #e5484d;
   --border: rgba(23, 26, 44, 0.08);
   --radius: 14px;
@@ -24,6 +25,7 @@
     --accent: #7086ff;
     --accent-2: #a17dff;
     --accent-soft: rgba(112, 134, 255, 0.16);
+    --accent-text: #7086ff;
     --border: rgba(255, 255, 255, 0.07);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
@@ -114,6 +116,11 @@ svg .fill {
 .icon-btn[aria-expanded='true'] {
   background: var(--surface);
   color: var(--text);
+}
+
+.top-actions {
+  display: flex;
+  gap: 2px;
 }
 
 /* Site atual */
@@ -329,7 +336,7 @@ body.is-muted .slider {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
   font-size: 12px;
 }
@@ -374,14 +381,14 @@ body.is-muted .slider {
   padding-top: 8px;
 }
 
-/* Lista de sites */
-#sitesView h2 {
+/* Vistas secundárias */
+.view h2 {
   margin: 0;
   font-size: 15px;
   letter-spacing: -0.01em;
 }
 
-#sitesView > p {
+.view > p {
   margin: 2px 0 10px;
 }
 
@@ -436,6 +443,194 @@ body.is-muted .slider {
 
 .sites .icon-btn:hover {
   color: var(--danger);
+}
+
+/* Volume padrão */
+.default-box {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 10px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.default-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.default-head output {
+  font-variant-numeric: tabular-nums;
+}
+
+.default-box .slider {
+  margin: 2px 0 4px;
+}
+
+.default-box p {
+  margin: 0 0 4px;
+}
+
+/* Seus atalhos */
+.shortcuts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.shortcuts dt {
+  min-width: 0;
+}
+
+.shortcuts dd {
+  margin: 0;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border: 1px solid var(--text-2);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+}
+
+.secondary-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.secondary-btn:hover {
+  background: var(--bg);
+}
+
+/* Só para leitores de tela */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.link:disabled {
+  color: var(--text-2);
+  cursor: default;
+  text-decoration: none;
+}
+
+/* Tocando agora */
+.playing-sec {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.playing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.playing-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.playing {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.playing li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 4px 4px 4px 8px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.play-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+.play-icon img {
+  border-radius: 3px;
+}
+
+.play-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.play-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.play-title,
+.play-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.play-title {
+  font-weight: 550;
+}
+
+.play-toggle[aria-pressed='true'] {
+  color: var(--danger);
+}
+
+.play-na {
+  padding-right: 6px;
+  font-size: 11px;
+}
+
+.playing-empty {
+  margin: 2px 2px 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

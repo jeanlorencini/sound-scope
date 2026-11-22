@@ -11,8 +11,10 @@ const event = () => {
 function createChrome(tabs, { local = {}, session = {} } = {}) {
   const area = (data) => ({
     data,
-    async get(key) {
-      return key in data ? { [key]: structuredClone(data[key]) } : {};
+    async get(keys) {
+      const out = {};
+      for (const key of [].concat(keys)) if (key in data) out[key] = structuredClone(data[key]);
+      return out;
     },
     async set(obj) {
       Object.assign(data, structuredClone(obj));
@@ -21,10 +23,13 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
   const sent = [];
   const injected = [];
   const badges = {};
+  const titles = {};
+  const updates = [];
   const byId = () => new Map(tabs.map((t) => [t.id, t]));
   const chrome = {
     storage: { local: area(local), session: area(session) },
     runtime: { onMessage: event(), onInstalled: event() },
+    commands: { onCommand: event() },
     tabs: {
       onRemoved: event(),
       onReplaced: event(),
@@ -35,8 +40,14 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
         return { ...t };
       },
       async query(q = {}) {
-        if (q.url) return tabs.filter((t) => /^https?:/.test(t.url)).map((t) => ({ ...t }));
-        return tabs.map((t) => ({ ...t }));
+        let list = tabs;
+        if (q.url) list = list.filter((t) => /^https?:/.test(t.url));
+        if (q.active) list = list.filter((t) => t.active);
+        if (q.audible) list = list.filter((t) => t.audible);
+        return list.map((t) => ({ ...t }));
+      },
+      async update(id, props) {
+        updates.push({ id, ...props });
       },
       async sendMessage(id, msg) {
         const t = byId().get(id);
@@ -57,11 +68,14 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
       async setBadgeText({ tabId, text }) {
         badges[tabId] = text;
       },
+      async setTitle({ tabId, title }) {
+        titles[tabId] = title;
+      },
       async setBadgeBackgroundColor() {},
       async setBadgeTextColor() {},
     },
   };
-  return { chrome, sent, injected, badges };
+  return { chrome, sent, injected, badges, titles, updates };
 }
 
 let n = 0;
@@ -75,7 +89,8 @@ async function boot(tabs, stores) {
       if (!handled) resolve(undefined);
     });
   const gains = () => Object.fromEntries(env.sent.filter((m) => m.type === 'gain').map((m) => [m.id, m.gain]));
-  return { ...env, call, gains };
+  const command = (name, tab) => env.chrome.commands.onCommand.fns[0](name, tab);
+  return { ...env, call, gains, command };
 }
 
 const TABS = () => [
@@ -203,4 +218,247 @@ test('getState injeta sob demanda e informa quando não consegue', async () => {
   const st = await bg.call({ type: 'getState', tabId: 3 });
   assert.equal(st.injected, true);
   assert.equal(bg.injected.length, 2);
+});
+
+// ---- Atalhos globais (R3) ------------------------------------------------------
+
+test('CA3.1/3.4: sem regra de aba, o atalho altera a regra do site em todas as abas dele', async () => {
+  const local = {};
+  const tabs = TABS();
+  tabs[0].active = true;
+  const bg = await boot(tabs, { local });
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 40 } });
+  await bg.command('volume-up', { id: 1, url: tabs[0].url });
+  assert.deepEqual(bg.gains(), { 1: 0.5, 2: 0.5 });
+  assert.equal(bg.badges[1], '50');
+  assert.equal(bg.titles[1], 'SoundScope — 50% em youtube.com (site)');
+  await wait(260);
+  assert.equal(local.sites['youtube.com'].volume, 50);
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é tocado');
+});
+
+test('CA3.4: com regra de aba, o atalho altera só a aba', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 60 } });
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 30 } });
+  await bg.command('volume-down', { id: 2 });
+  assert.deepEqual(bg.gains(), { 1: 0.6, 2: 0.2 });
+  const st = await bg.call({ type: 'getState', tabId: 2 });
+  assert.deepEqual(st.tabRule, { volume: 20, muted: false });
+  assert.deepEqual(st.siteRule, { volume: 60, muted: false });
+  assert.equal(bg.titles[2], 'SoundScope — 20% nesta aba');
+});
+
+test('CA3.2/3.3/3.6: mudo pelo atalho mantém o volume e o selo mostra ×', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 70 } });
+  await bg.command('toggle-mute', { id: 3 });
+  assert.equal(bg.gains()[3], 0);
+  assert.equal(bg.badges[3], '×');
+  assert.equal(bg.titles[3], 'SoundScope — silenciado em open.spotify.com (site)');
+  await bg.command('toggle-mute', { id: 3 });
+  assert.equal(bg.gains()[3], 0.7, 'volta ao volume anterior');
+  await bg.command('toggle-mute', { id: 3 });
+  await bg.command('volume-up', { id: 3 });
+  assert.equal(bg.gains()[3], 0.8, 'subir o volume tira o mudo');
+  assert.equal(bg.updates.length, 0);
+});
+
+test('CA3.6: selo vazio em 100% e título ainda descreve o estado', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 95 } });
+  await bg.command('volume-up', { id: 3 });
+  assert.equal(bg.badges[3], '');
+  assert.equal(bg.titles[3], 'SoundScope — 100% em open.spotify.com (site)');
+});
+
+test('CA3.7: em página protegida o atalho não grava nada e não muda o selo', async () => {
+  await wait(260); // deixa a persistência pendente do teste anterior terminar
+  const local = {};
+  const bg = await boot(TABS(), { local });
+  await bg.command('volume-down', { id: 4 });
+  await bg.command('nao-existe', { id: 1 });
+  await wait(260);
+  assert.equal(local.sites, undefined);
+  assert.equal(bg.badges[4], undefined);
+  assert.equal(bg.badges[1], undefined);
+});
+
+test('CA3.8/3.9: cinco atalhos seguidos acumulam (40 → 90) sem popup, e o estado fica salvo', async () => {
+  const local = {};
+  const tabs = TABS();
+  tabs[2].active = true;
+  const bg = await boot(tabs, { local });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 40 } });
+  // Sem a aba no evento: usa a aba ativa da janela em foco.
+  await Promise.all([1, 2, 3, 4, 5].map(() => bg.command('volume-up')));
+  assert.equal(bg.gains()[3], 0.9);
+  await wait(260);
+  assert.equal(local.sites['open.spotify.com'].volume, 90);
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.deepEqual(st.effective, { source: 'site', rule: { volume: 90, muted: false } });
+});
+
+// ---- Tocando agora (R4) --------------------------------------------------------
+
+const PLAYING = () => [
+  { id: 1, url: 'https://www.youtube.com/watch?v=a', title: 'YouTube — Música', hasScript: true, audible: true, active: true },
+  { id: 2, url: 'https://youtube.com/watch?v=b', title: 'Outro vídeo', hasScript: true, audible: true },
+  { id: 3, url: 'https://open.spotify.com/', title: 'Spotify', favIconUrl: 'https://open.spotify.com/f.ico', hasScript: true, audible: true },
+  { id: 4, url: 'chrome://settings', title: 'Configurações', hasScript: false, audible: true },
+  { id: 5, url: 'https://news.example/', title: 'Notícias', hasScript: true },
+];
+
+test('CA4.1/4.5: lista as abas tocando, sem a aba ativa', async () => {
+  const bg = await boot(PLAYING());
+  const res = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.deepEqual(res.items.map((i) => i.tabId), [2, 3, 4]);
+  assert.deepEqual(res.items[1], {
+    tabId: 3,
+    title: 'Spotify',
+    host: 'open.spotify.com',
+    favIconUrl: 'https://open.spotify.com/f.ico',
+    controllable: true,
+    silenced: false,
+    effectiveRule: { volume: 100, muted: false },
+  });
+  assert.equal(res.items[2].controllable, false);
+  const empty = await boot([{ id: 9, url: 'https://a.com/', audible: true, hasScript: true }]);
+  assert.deepEqual((await empty.call({ type: 'listPlaying', activeTabId: 9 })).items, []);
+});
+
+test('CA4.3/4.4: "Silenciar as outras" cria só regras de aba, mantém a ativa e põe × no selo', async () => {
+  const local = {};
+  const session = {};
+  const tabs = PLAYING();
+  const bg = await boot(tabs, { local, session });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 60 } });
+  const res = await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(res.count, 2);
+  assert.deepEqual(bg.gains(), { 2: 0, 3: 0 });
+  assert.equal(bg.badges[2], '×');
+  assert.equal(bg.badges[3], '×');
+  assert.equal(bg.badges[1], undefined, 'a aba ativa não muda');
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é usado');
+  // O Chrome tira as abas silenciadas de `audible`; elas continuam na lista.
+  tabs[1].audible = false;
+  tabs[2].audible = false;
+  const list = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.deepEqual(list.items.filter((i) => i.silenced).map((i) => i.tabId), [2, 3]);
+  await wait(260);
+  assert.deepEqual(Object.keys(local.sites), ['open.spotify.com']);
+  assert.deepEqual(local.sites['open.spotify.com'].volume, 60, 'regra de site intacta');
+  assert.deepEqual(session.tabs, { 2: { volume: 100, muted: true }, 3: { volume: 60, muted: true } });
+  assert.deepEqual(session.silenced, { 2: null, 3: null });
+  // Clicar de novo não silencia em dobro.
+  assert.equal((await bg.call({ type: 'silenceOthers', activeTabId: 1 })).count, 0);
+});
+
+test('CA4.2: alternar uma aba silenciada restaura exatamente a regra anterior', async () => {
+  const bg = await boot(PLAYING());
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 35 } });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(bg.gains()[2], 0);
+  let r = await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.equal(r.item.silenced, false);
+  assert.equal(bg.gains()[2], 0.35);
+  let st = await bg.call({ type: 'getState', tabId: 2 });
+  assert.deepEqual(st.tabRule, { volume: 35, muted: false });
+
+  // A aba 3 não tinha regra de aba: desfazer remove a regra criada.
+  await bg.call({ type: 'toggleTabMute', tabId: 3 });
+  st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.equal(st.tabRule, null, 'sem regra de aba antes, sem regra depois');
+  assert.equal(bg.gains()[3], 1);
+  r = await bg.call({ type: 'toggleTabMute', tabId: 3 });
+  assert.equal(r.item.silenced, true);
+  assert.equal(bg.gains()[3], 0);
+  assert.equal((await bg.call({ type: 'toggleTabMute', tabId: 4 })).ok, false);
+});
+
+test('aba silenciada fechada sai da lista; mexer na regra da aba cancela o desfazer', async () => {
+  const session = {};
+  const bg = await boot(PLAYING(), { session });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  await bg.chrome.tabs.onRemoved.fire(3);
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 80 } });
+  await wait(260);
+  assert.deepEqual(session.silenced, {});
+});
+
+test('M1: atalho numa aba silenciada vira a nova regra e cancela o desfazer', async () => {
+  const session = {};
+  const tabs = PLAYING();
+  const bg = await boot(tabs, { session });
+  await bg.call({ type: 'silenceOthers', activeTabId: 1 });
+  assert.equal(bg.gains()[2], 0);
+  await bg.command('volume-up', { id: 2, url: tabs[1].url });
+  assert.ok(bg.gains()[2] > 0, 'o atalho devolve o som');
+  const list = await bg.call({ type: 'listPlaying', activeTabId: 1 });
+  assert.equal(list.items.find((i) => i.tabId === 2).silenced, false);
+  const st = await bg.call({ type: 'getState', tabId: 2 });
+  const rule = st.tabRule;
+  // Alternar agora silencia de novo (não restaura a regra antiga por cima da do atalho).
+  const r = await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.equal(r.item.silenced, true);
+  await bg.call({ type: 'toggleTabMute', tabId: 2 });
+  assert.deepEqual((await bg.call({ type: 'getState', tabId: 2 })).tabRule, rule);
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é usado');
+});
+
+// ---- Volume padrão (R5) --------------------------------------------------------
+
+test('CA5.3/5.5: mudar o padrão aplica na hora só às abas sem regra', async () => {
+  const local = {};
+  const bg = await boot(PLAYING(), { local });
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 40 } }); // youtube: abas 1 e 2
+  await bg.call({ type: 'set', tabId: 5, scope: 'tab', rule: { volume: 70 } });
+  bg.sent.length = 0;
+  const res = await bg.call({ type: 'setDefault', volume: 60 });
+  assert.deepEqual(res, { ok: true, defaultVolume: 60 });
+  assert.deepEqual(bg.gains(), { 3: 0.6 }, 'só o Spotify (sem regra) muda');
+  assert.equal(bg.badges[3], '60');
+  assert.equal(bg.titles[3], 'SoundScope — volume padrão 60%');
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.equal(st.defaultVolume, 60);
+  assert.deepEqual(st.effective, { source: 'default-user', rule: { volume: 60, muted: false } });
+  await wait(260);
+  assert.equal(local.defaultVolume, 60);
+  assert.deepEqual(Object.keys(local.sites), ['youtube.com'], 'chave própria, separada de sites');
+});
+
+test('CA5.4: o padrão sobrevive a reiniciar e valores inválidos voltam a 100%', async () => {
+  let bg = await boot(TABS(), { local: { defaultVolume: 30 } });
+  let r = await bg.call({ type: 'getGain' }, { tab: { id: 3, url: 'https://open.spotify.com/' }, frameId: 0 });
+  assert.equal(r.gain, 0.3);
+  for (const bad of ['30', -5, 200, { v: 1 }]) {
+    bg = await boot(TABS(), { local: { defaultVolume: bad } });
+    r = await bg.call({ type: 'getGain' }, { tab: { id: 3, url: 'https://open.spotify.com/' }, frameId: 0 });
+    assert.equal(r.gain, 1, JSON.stringify(bad));
+  }
+  assert.equal((await bg.call({ type: 'setDefault', volume: 'x' })).ok, false);
+});
+
+test('CA5.7: "Redefinir padrão" volta a 100% e remover um site passa a usar o padrão', async () => {
+  const bg = await boot(TABS(), { local: { defaultVolume: 50 } });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 20 } });
+  const list = await bg.call({ type: 'removeSite', host: 'open.spotify.com' });
+  assert.equal(list.defaultVolume, 50);
+  assert.equal(bg.gains()[3], 0.5);
+  const res = await bg.call({ type: 'clearDefault' });
+  assert.deepEqual(res, { ok: true, defaultVolume: null });
+  assert.equal(bg.gains()[3], 1);
+  assert.equal(bg.badges[3], '');
+  assert.equal(bg.titles[3], 'SoundScope');
+  // 100% equivale a não ter padrão.
+  assert.deepEqual(await bg.call({ type: 'setDefault', volume: 100 }), { ok: true, defaultVolume: null });
+});
+
+test('CA5.8: padrão 0% silencia pelo ganho, sem regra com mudo', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'setDefault', volume: 0 });
+  assert.equal(bg.gains()[3], 0);
+  assert.equal(bg.badges[3], '×');
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.deepEqual(st.effective.rule, { volume: 0, muted: false });
 });

@@ -1,4 +1,5 @@
-import { DEFAULT_RULE, clampVolume } from '../lib/rules.js';
+import { DEFAULT_RULE, clampVolume, toggleMuteRule } from '../lib/rules.js';
+import { describeCommands } from '../lib/commands.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -22,6 +23,18 @@ const el = {
   sitesView: $('sitesView'),
   sitesList: $('sitesList'),
   sitesEmpty: $('sitesEmpty'),
+  playing: $('playing'),
+  playingList: $('playingList'),
+  playingEmpty: $('playingEmpty'),
+  playingLive: $('playingLive'),
+  silenceOthers: $('silenceOthers'),
+  defaultSlider: $('defaultSlider'),
+  defaultValue: $('defaultValue'),
+  defaultReset: $('defaultReset'),
+  shortcutsToggle: $('shortcutsToggle'),
+  shortcutsView: $('shortcutsView'),
+  shortcutsList: $('shortcutsList'),
+  changeShortcuts: $('changeShortcuts'),
 };
 
 const send = (msg) => chrome.runtime.sendMessage(msg);
@@ -33,31 +46,42 @@ let rule = { ...DEFAULT_RULE }; // regra sendo editada no escopo atual
 
 const hostLabel = (host) => (host === 'file://' ? 'Arquivos locais' : host);
 
+const defaultRule = () => (st && st.defaultVolume != null ? { volume: st.defaultVolume, muted: false } : DEFAULT_RULE);
+
 const ruleFor = (s) =>
-  s === 'tab' ? st.tabRule ?? { ...st.effective.rule } : st.siteRule ?? { ...DEFAULT_RULE };
+  s === 'tab' ? st.tabRule ?? { ...st.effective.rule } : st.siteRule ?? { ...defaultRule() };
 
 const describeRule = (r) => (r.muted || r.volume === 0 ? 'silenciado' : `${r.volume}%`);
 
 // ---- Envio com uma requisição por vez (a última sempre vence) ----------------
-let inFlight = false;
-let queued = null;
-async function pushRule() {
-  queued = { type: 'set', tabId, scope, rule: { ...rule } };
-  if (inFlight) return;
-  inFlight = true;
-  while (queued) {
-    const msg = queued;
-    queued = null;
-    try {
-      const res = await send(msg);
-      if (res && res.ok) st = res;
-    } catch {
-      /* service worker reiniciando: a próxima interação reenvia */
+function latestOnly(onResult, onIdle) {
+  let inFlight = false;
+  let queued = null;
+  return async (msg) => {
+    queued = msg;
+    if (inFlight) return;
+    inFlight = true;
+    while (queued) {
+      const next = queued;
+      queued = null;
+      try {
+        onResult(await send(next));
+      } catch {
+        /* service worker reiniciando: a próxima interação reenvia */
+      }
     }
-  }
-  inFlight = false;
-  renderMeta();
+    inFlight = false;
+    onIdle?.();
+  };
 }
+
+const sendRule = latestOnly(
+  (res) => {
+    if (res && res.ok) st = res;
+  },
+  () => renderMeta()
+);
+const pushRule = () => sendRule({ type: 'set', tabId, scope, rule: { ...rule } });
 
 let frame = 0;
 const scheduleCommit = () => {
@@ -93,8 +117,8 @@ function renderMeta() {
   el.override.hidden = !(scope === 'site' && st.tabRule);
 
   const { source, rule: active } = st.effective;
-  el.status.textContent =
-    source === 'default' ? 'Volume normal' : `Tocando em ${describeRule(active)} · ${source === 'tab' ? 'regra da aba' : 'regra do site'}`;
+  const origin = { tab: 'regra da aba', site: 'regra do site', 'default-user': 'volume padrão' }[source];
+  el.status.textContent = source === 'default' ? 'Volume normal' : `Tocando em ${describeRule(active)} · ${origin}`;
 
   const hasRule = scope === 'tab' ? Boolean(st.tabRule) : Boolean(st.siteRule);
   el.reset.hidden = !hasRule;
@@ -104,7 +128,9 @@ function renderMeta() {
       : 'Salvo para o site'
     : scope === 'tab'
       ? 'Mexa no volume para criar a regra da aba'
-      : 'Mexa no volume para salvar no site';
+      : st.defaultVolume != null
+        ? 'Usando o volume padrão — mexa para salvar no site'
+        : 'Mexa no volume para salvar no site';
 }
 
 function selectScope(next) {
@@ -124,9 +150,7 @@ function setVolume(v) {
 }
 
 function toggleMute() {
-  rule = rule.muted
-    ? { volume: rule.volume === 0 ? 50 : rule.volume, muted: false }
-    : { ...rule, muted: true };
+  rule = toggleMuteRule(rule);
   renderControl();
   scheduleCommit();
 }
@@ -149,7 +173,15 @@ el.clearTabFromSite.addEventListener('click', async () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (el.controls.hidden || !el.sitesView.hidden || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'Escape' && view !== 'main') {
+    e.preventDefault();
+    const opener = toggles[view];
+    showView('main');
+    opener.focus();
+    return;
+  }
+  if (el.controls.hidden || view !== 'main' || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.target instanceof Element && e.target.closest('#playing')) return; // teclas da lista são da lista
   if (e.key === 'm' || e.key === 'M') {
     e.preventDefault();
     toggleMute();
@@ -201,18 +233,193 @@ function renderSites(sites) {
   el.sitesEmpty.hidden = sites.length > 0;
 }
 
-el.sitesToggle.addEventListener('click', async () => {
-  const open = el.sitesView.hidden;
-  el.sitesView.hidden = !open;
-  el.mainView.hidden = open;
-  el.sitesToggle.setAttribute('aria-expanded', String(open));
-  if (open) {
-    const res = await send({ type: 'listSites' });
+// ---- Volume padrão ---------------------------------------------------------------
+function renderDefault(volume) {
+  const v = volume ?? 100;
+  el.defaultSlider.value = String(v);
+  el.defaultSlider.style.setProperty('--pct', `${v}%`);
+  el.defaultSlider.setAttribute('aria-valuetext', v === 0 ? '0% (silenciado)' : `${v}%`);
+  el.defaultValue.textContent = `${v}%`;
+  el.defaultReset.hidden = volume == null;
+}
+
+let defaultChanged = false;
+const sendDefault = latestOnly((res) => {
+  if (res && res.ok) el.defaultReset.hidden = res.defaultVolume == null;
+});
+
+el.defaultSlider.addEventListener('input', () => {
+  const v = clampVolume(el.defaultSlider.valueAsNumber);
+  renderDefault(v === 100 ? null : v);
+  defaultChanged = true;
+  sendDefault({ type: 'setDefault', volume: v });
+});
+
+el.defaultReset.addEventListener('click', () => {
+  renderDefault(null);
+  defaultChanged = true;
+  sendDefault({ type: 'clearDefault' });
+  el.defaultSlider.focus();
+});
+
+// ---- Seus atalhos ----------------------------------------------------------------
+function renderShortcuts(list) {
+  const rows = describeCommands(list).flatMap(({ description, keys }) => {
+    const dt = document.createElement('dt');
+    dt.textContent = description;
+    const dd = document.createElement('dd');
+    if (keys.length) {
+      keys.forEach((k, i) => {
+        if (i) dd.append('+');
+        const kbd = document.createElement('kbd');
+        kbd.textContent = k;
+        dd.append(kbd);
+      });
+    } else {
+      dd.className = 'muted-text';
+      dd.textContent = 'Não definido';
+    }
+    return [dt, dd];
+  });
+  el.shortcutsList.replaceChildren(...rows);
+}
+
+el.changeShortcuts.addEventListener('click', () => {
+  // Link para chrome:// não abre a partir do popup: precisa de tabs.create.
+  chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+});
+
+// ---- Vistas (só uma aberta por vez) ---------------------------------------------
+const views = { main: el.mainView, sites: el.sitesView, shortcuts: el.shortcutsView };
+const toggles = { sites: el.sitesToggle, shortcuts: el.shortcutsToggle };
+let view = 'main';
+
+async function showView(next) {
+  const from = view;
+  view = next;
+  for (const [name, node] of Object.entries(views)) node.hidden = name !== next;
+  for (const [name, btn] of Object.entries(toggles)) btn.setAttribute('aria-expanded', String(name === next));
+  if (next === 'sites') {
+    const res = await send({ type: 'listSites' }).catch(() => null);
     renderSites(res && res.ok ? res.sites : []);
-  } else {
+    renderDefault(res && res.ok ? res.defaultVolume : null);
+  } else if (next === 'shortcuts') {
+    renderShortcuts(await chrome.commands.getAll().catch(() => []));
+  } else if (from === 'sites' && defaultChanged) {
+    defaultChanged = false;
+    await refresh();
+  } else if (st) {
     selectScope(scope);
   }
+}
+
+for (const [name, btn] of Object.entries(toggles)) {
+  btn.addEventListener('click', () => showView(view === name ? 'main' : name));
+}
+
+// ---- Tocando agora -------------------------------------------------------------
+const ICON_SOUND =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill"/><path d="M15.5 9a4 4 0 0 1 0 6"/></svg>';
+const ICON_MUTED =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" class="fill"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+const ICON_TAB =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9.5h18"/></svg>';
+
+const tabLabel = (item) => item.title || (item.host ? hostLabel(item.host) : 'Aba sem título');
+
+function playingRow(item) {
+  const li = document.createElement('li');
+  const icon = document.createElement('span');
+  icon.className = 'play-icon';
+  if (/^(https?:|data:image\/)/.test(item.favIconUrl)) {
+    const img = document.createElement('img');
+    img.src = item.favIconUrl;
+    img.alt = '';
+    img.width = img.height = 16;
+    img.addEventListener('error', () => (icon.innerHTML = ICON_TAB), { once: true });
+    icon.append(img);
+  } else {
+    icon.innerHTML = ICON_TAB;
+  }
+
+  const text = document.createElement('span');
+  text.className = 'play-text';
+  const title = document.createElement('span');
+  title.className = 'play-title';
+  title.textContent = tabLabel(item);
+  title.title = tabLabel(item);
+  const host = document.createElement('span');
+  host.className = 'muted-text play-host';
+  host.textContent = item.controllable ? (item.silenced ? `${hostLabel(item.host)} · silenciada` : hostLabel(item.host)) : 'Aba protegida';
+  text.append(title, host);
+
+  let action;
+  if (item.controllable) {
+    action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'icon-btn play-toggle';
+    action.dataset.tabId = String(item.tabId);
+    action.setAttribute('aria-pressed', String(item.silenced));
+    const label = item.silenced ? `Ativar som de ${tabLabel(item)}` : `Silenciar ${tabLabel(item)}`;
+    action.setAttribute('aria-label', label);
+    action.title = label;
+    action.innerHTML = item.silenced ? ICON_MUTED : ICON_SOUND;
+    action.addEventListener('click', async () => {
+      const res = await send({ type: 'toggleTabMute', tabId: item.tabId }).catch(() => null);
+      if (res && res.ok) {
+        el.playingLive.textContent = res.item.silenced ? `${tabLabel(item)} silenciada` : `Som de ${tabLabel(item)} ativado`;
+      }
+      await loadPlaying();
+    });
+  } else {
+    action = document.createElement('span');
+    action.className = 'muted-text play-na';
+    action.textContent = 'não dá para controlar';
+  }
+  li.append(icon, text, action);
+  return li;
+}
+
+function renderPlaying(items) {
+  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.tabId;
+  el.playingList.replaceChildren(...items.map(playingRow));
+  el.playingList.hidden = items.length === 0;
+  const pending = items.filter((i) => i.controllable && !i.silenced).length;
+  el.silenceOthers.disabled = pending === 0;
+  // A explicação só descreve o botão quando ele está desabilitado (oculta, ainda seria lida).
+  if (pending === 0) el.silenceOthers.setAttribute('aria-describedby', 'playingEmpty');
+  else el.silenceOthers.removeAttribute('aria-describedby');
+  el.playingEmpty.hidden = pending > 0;
+  el.playingEmpty.textContent = items.length === 0 ? 'Nenhuma outra aba está tocando' : 'Nenhuma outra aba para silenciar';
+  if (focused) {
+    const again = el.playingList.querySelector(`[data-tab-id="${focused}"]`);
+    if (again) again.focus();
+  }
+}
+
+async function loadPlaying() {
+  const res = await send({ type: 'listPlaying', activeTabId: tabId }).catch(() => null);
+  renderPlaying(res && res.ok ? res.items : []);
+}
+
+el.silenceOthers.addEventListener('click', async () => {
+  const res = await send({ type: 'silenceOthers', activeTabId: tabId }).catch(() => null);
+  if (!res || !res.ok) return;
+  el.playingLive.textContent = res.count === 1 ? '1 aba silenciada' : `${res.count} abas silenciadas`;
+  if (document.activeElement === el.silenceOthers) el.playingList.querySelector('button')?.focus();
+  renderPlaying(res.items);
 });
+
+// Abas começam ou param de tocar com o popup aberto.
+let playingTimer = 0;
+const schedulePlaying = () => {
+  clearTimeout(playingTimer);
+  playingTimer = setTimeout(loadPlaying, 250);
+};
+chrome.tabs.onUpdated.addListener((_id, change) => {
+  if ('audible' in change || 'title' in change || 'favIconUrl' in change) schedulePlaying();
+});
+chrome.tabs.onRemoved.addListener(schedulePlaying);
 
 // ---- Início ------------------------------------------------------------------
 async function refresh() {
@@ -233,6 +440,7 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return showUnsupported();
   tabId = tab.id;
+  loadPlaying();
 
   let label = tab.title || '';
   try {
