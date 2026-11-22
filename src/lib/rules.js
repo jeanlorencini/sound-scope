@@ -56,3 +56,22 @@ export function badgeText(rule) {
   if (rule.muted || rule.volume === 0) return '×';
   return String(rule.volume);
 }
+
+/** Alterna o mudo do SoundScope mantendo o volume (tirar o mudo em 0% volta para 50%). */
+export function toggleMuteRule(rule) {
+  const r = sanitizeRule(rule) ?? { ...DEFAULT_RULE };
+  return r.muted ? { volume: r.volume === 0 ? 50 : r.volume, muted: false } : { ...r, muted: true };
+}
+
+const hostText = (host) => (host === 'file://' ? 'arquivos locais' : host);
+
+/** Título do ícone: descreve o estado mesmo quando o selo está vazio. */
+export function titleText({ source, rule, host } = {}) {
+  if (!host || !rule || (source === 'default' && isDefaultRule(rule))) return 'SoundScope';
+  const silent = rule.muted || rule.volume === 0;
+  const value = silent ? 'silenciado' : `${rule.volume}%`;
+  if (source === 'tab') return `SoundScope — ${value} nesta aba`;
+  if (source === 'site') return `SoundScope — ${value} em ${hostText(host)} (site)`;
+  if (source === 'default-user') return `SoundScope — volume padrão ${silent ? '0% (silenciado)' : value}`;
+  return `SoundScope — ${value}`;
+}

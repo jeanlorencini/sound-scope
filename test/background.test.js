@@ -21,10 +21,13 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
   const sent = [];
   const injected = [];
   const badges = {};
+  const titles = {};
+  const updates = [];
   const byId = () => new Map(tabs.map((t) => [t.id, t]));
   const chrome = {
     storage: { local: area(local), session: area(session) },
     runtime: { onMessage: event(), onInstalled: event() },
+    commands: { onCommand: event() },
     tabs: {
       onRemoved: event(),
       onReplaced: event(),
@@ -35,8 +38,14 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
         return { ...t };
       },
       async query(q = {}) {
-        if (q.url) return tabs.filter((t) => /^https?:/.test(t.url)).map((t) => ({ ...t }));
-        return tabs.map((t) => ({ ...t }));
+        let list = tabs;
+        if (q.url) list = list.filter((t) => /^https?:/.test(t.url));
+        if (q.active) list = list.filter((t) => t.active);
+        if (q.audible) list = list.filter((t) => t.audible);
+        return list.map((t) => ({ ...t }));
+      },
+      async update(id, props) {
+        updates.push({ id, ...props });
       },
       async sendMessage(id, msg) {
         const t = byId().get(id);
@@ -57,11 +66,14 @@ function createChrome(tabs, { local = {}, session = {} } = {}) {
       async setBadgeText({ tabId, text }) {
         badges[tabId] = text;
       },
+      async setTitle({ tabId, title }) {
+        titles[tabId] = title;
+      },
       async setBadgeBackgroundColor() {},
       async setBadgeTextColor() {},
     },
   };
-  return { chrome, sent, injected, badges };
+  return { chrome, sent, injected, badges, titles, updates };
 }
 
 let n = 0;
@@ -75,7 +87,8 @@ async function boot(tabs, stores) {
       if (!handled) resolve(undefined);
     });
   const gains = () => Object.fromEntries(env.sent.filter((m) => m.type === 'gain').map((m) => [m.id, m.gain]));
-  return { ...env, call, gains };
+  const command = (name, tab) => env.chrome.commands.onCommand.fns[0](name, tab);
+  return { ...env, call, gains, command };
 }
 
 const TABS = () => [
@@ -203,4 +216,83 @@ test('getState injeta sob demanda e informa quando não consegue', async () => {
   const st = await bg.call({ type: 'getState', tabId: 3 });
   assert.equal(st.injected, true);
   assert.equal(bg.injected.length, 2);
+});
+
+// ---- Atalhos globais (R3) ------------------------------------------------------
+
+test('CA3.1/3.4: sem regra de aba, o atalho altera a regra do site em todas as abas dele', async () => {
+  const local = {};
+  const tabs = TABS();
+  tabs[0].active = true;
+  const bg = await boot(tabs, { local });
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 40 } });
+  await bg.command('volume-up', { id: 1, url: tabs[0].url });
+  assert.deepEqual(bg.gains(), { 1: 0.5, 2: 0.5 });
+  assert.equal(bg.badges[1], '50');
+  assert.equal(bg.titles[1], 'SoundScope — 50% em youtube.com (site)');
+  await wait(260);
+  assert.equal(local.sites['youtube.com'].volume, 50);
+  assert.equal(bg.updates.length, 0, 'mudo nativo não é tocado');
+});
+
+test('CA3.4: com regra de aba, o atalho altera só a aba', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 60 } });
+  await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 30 } });
+  await bg.command('volume-down', { id: 2 });
+  assert.deepEqual(bg.gains(), { 1: 0.6, 2: 0.2 });
+  const st = await bg.call({ type: 'getState', tabId: 2 });
+  assert.deepEqual(st.tabRule, { volume: 20, muted: false });
+  assert.deepEqual(st.siteRule, { volume: 60, muted: false });
+  assert.equal(bg.titles[2], 'SoundScope — 20% nesta aba');
+});
+
+test('CA3.2/3.3/3.6: mudo pelo atalho mantém o volume e o selo mostra ×', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 70 } });
+  await bg.command('toggle-mute', { id: 3 });
+  assert.equal(bg.gains()[3], 0);
+  assert.equal(bg.badges[3], '×');
+  assert.equal(bg.titles[3], 'SoundScope — silenciado em open.spotify.com (site)');
+  await bg.command('toggle-mute', { id: 3 });
+  assert.equal(bg.gains()[3], 0.7, 'volta ao volume anterior');
+  await bg.command('toggle-mute', { id: 3 });
+  await bg.command('volume-up', { id: 3 });
+  assert.equal(bg.gains()[3], 0.8, 'subir o volume tira o mudo');
+  assert.equal(bg.updates.length, 0);
+});
+
+test('CA3.6: selo vazio em 100% e título ainda descreve o estado', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 95 } });
+  await bg.command('volume-up', { id: 3 });
+  assert.equal(bg.badges[3], '');
+  assert.equal(bg.titles[3], 'SoundScope — 100% em open.spotify.com (site)');
+});
+
+test('CA3.7: em página protegida o atalho não grava nada e não muda o selo', async () => {
+  await wait(260); // deixa a persistência pendente do teste anterior terminar
+  const local = {};
+  const bg = await boot(TABS(), { local });
+  await bg.command('volume-down', { id: 4 });
+  await bg.command('nao-existe', { id: 1 });
+  await wait(260);
+  assert.equal(local.sites, undefined);
+  assert.equal(bg.badges[4], undefined);
+  assert.equal(bg.badges[1], undefined);
+});
+
+test('CA3.8/3.9: cinco atalhos seguidos acumulam (40 → 90) sem popup, e o estado fica salvo', async () => {
+  const local = {};
+  const tabs = TABS();
+  tabs[2].active = true;
+  const bg = await boot(tabs, { local });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 40 } });
+  // Sem a aba no evento: usa a aba ativa da janela em foco.
+  await Promise.all([1, 2, 3, 4, 5].map(() => bg.command('volume-up')));
+  assert.equal(bg.gains()[3], 0.9);
+  await wait(260);
+  assert.equal(local.sites['open.spotify.com'].volume, 90);
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.deepEqual(st.effective, { source: 'site', rule: { volume: 90, muted: false } });
 });

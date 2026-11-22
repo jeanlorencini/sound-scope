@@ -1,4 +1,4 @@
-import { DEFAULT_RULE, clampVolume } from '../lib/rules.js';
+import { DEFAULT_RULE, clampVolume, toggleMuteRule } from '../lib/rules.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -124,9 +124,7 @@ function setVolume(v) {
 }
 
 function toggleMute() {
-  rule = rule.muted
-    ? { volume: rule.volume === 0 ? 50 : rule.volume, muted: false }
-    : { ...rule, muted: true };
+  rule = toggleMuteRule(rule);
   renderControl();
   scheduleCommit();
 }

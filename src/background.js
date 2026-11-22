@@ -2,7 +2,8 @@
 //  • Regras de site: chrome.storage.local  { sites: { [host]: { volume, muted, updatedAt } } }
 //  • Regras de aba:  chrome.storage.session { tabs: { [tabId]: { volume, muted } } }
 //    (valem só enquanto a aba existir, mesmo que ela navegue para outro domínio)
-import { badgeText, gainOf, resolveRule, sanitizeRule, siteKey } from './lib/rules.js';
+import { badgeText, gainOf, resolveRule, sanitizeRule, siteKey, titleText } from './lib/rules.js';
+import { applyCommand } from './lib/commands.js';
 
 const PERSIST_DELAY_MS = 200;
 const BADGE_COLOR = '#536dfe';
@@ -42,10 +43,13 @@ const describe = (state, tabId, url) => {
 // ---- Aplicação ---------------------------------------------------------------
 const getTab = (tabId) => chrome.tabs.get(tabId).catch(() => null);
 
-async function updateBadge(tabId, rule) {
+// Selo e título do ícone: o retorno visível de qualquer mudança, com ou sem popup aberto.
+async function updateBadge(tabId, { host, effective }) {
+  const { rule } = effective;
   const text = badgeText(rule);
   try {
     await chrome.action.setBadgeText({ tabId, text });
+    await chrome.action.setTitle({ tabId, title: titleText({ ...effective, host }) });
     if (text) {
       const muted = rule.muted || rule.volume === 0;
       await chrome.action.setBadgeBackgroundColor({ tabId, color: muted ? BADGE_MUTED_COLOR : BADGE_COLOR });
@@ -58,8 +62,9 @@ async function updateBadge(tabId, rule) {
 
 async function applyToTab(state, tab) {
   if (!tab || tab.id == null) return;
-  const { host, effective } = describe(state, tab.id, tab.url);
-  await updateBadge(tab.id, effective.rule);
+  const info = describe(state, tab.id, tab.url);
+  const { host, effective } = info;
+  await updateBadge(tab.id, info);
   if (!host) return;
   await chrome.tabs.sendMessage(tab.id, { type: 'gain', gain: gainOf(effective.rule) }).catch(() => {});
 }
@@ -100,8 +105,9 @@ const handlers = {
     const tab = sender.tab;
     if (!tab || tab.id == null) return { gain: 1 };
     const state = await loadState();
-    const { effective } = describe(state, tab.id, tab.url);
-    if (sender.frameId === 0) updateBadge(tab.id, effective.rule);
+    const info = describe(state, tab.id, tab.url);
+    const { effective } = info;
+    if (sender.frameId === 0) updateBadge(tab.id, info);
     return { gain: gainOf(effective.rule) };
   },
 
@@ -178,6 +184,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // resposta assíncrona
 });
 
+// ---- Atalhos globais (chrome.commands) ----------------------------------------
+// Um comando por vez: disparos rápidos acumulam sem perder passos.
+let commandQueue = Promise.resolve();
+const enqueue = (fn) => (commandQueue = commandQueue.then(fn).catch(() => {}));
+
+async function runCommand(command, tab) {
+  if (!tab || tab.id == null) [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab || tab.id == null) return;
+  const state = await loadState();
+  tab = (await getTab(tab.id)) ?? tab;
+  // Daqui até gravar não há await: lê e escreve sobre o mesmo estado.
+  const { host, tabRule, effective } = describe(state, tab.id, tab.url);
+  if (!host) return; // página protegida: nada muda
+  const next = applyCommand(effective.rule, command);
+  if (!next) return;
+  // Só o ganho do SoundScope: o mudo nativo da aba (chrome.tabs.update) nunca é tocado.
+  if (tabRule) {
+    state.tabs[tab.id] = next;
+    persistTabs(state);
+    await applyToTab(state, tab);
+  } else {
+    state.sites[host] = { ...next, updatedAt: Date.now() };
+    persistSites(state);
+    await applyToSite(state, host);
+  }
+}
+
+chrome.commands.onCommand.addListener((command, tab) => enqueue(() => runCommand(command, tab)));
+
 // ---- Ciclo de vida das abas ------------------------------------------------
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state = await loadState();
@@ -202,7 +237,7 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!changeInfo.url && changeInfo.status !== 'loading') return;
   const state = await loadState();
-  updateBadge(tabId, describe(state, tabId, tab.url).effective.rule);
+  updateBadge(tabId, describe(state, tabId, tab.url));
 });
 
 // Após instalar/atualizar, ativa a extensão nas abas que já estavam abertas.
