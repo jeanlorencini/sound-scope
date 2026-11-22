@@ -1,10 +1,20 @@
 // SoundScope — service worker. Guarda as regras e aplica o volume às abas.
 //  • Regras de site: chrome.storage.local  { sites: { [host]: { volume, muted, updatedAt } } }
+//  • Volume padrão (sites sem regra): chrome.storage.local { defaultVolume: 0..99 | null }
 //  • Regras de aba:  chrome.storage.session { tabs: { [tabId]: { volume, muted } } }
 //    (valem só enquanto a aba existir, mesmo que ela navegue para outro domínio)
 //  • Abas silenciadas por "Silenciar as outras": chrome.storage.session
 //    { silenced: { [tabId]: regraDeAbaAnterior | null } } (para desfazer exatamente)
-import { badgeText, gainOf, resolveRule, sanitizeRule, siteKey, titleText } from './lib/rules.js';
+import {
+  badgeText,
+  defaultRuleOf,
+  gainOf,
+  resolveRule,
+  sanitizeDefault,
+  sanitizeRule,
+  siteKey,
+  titleText,
+} from './lib/rules.js';
 import { applyCommand } from './lib/commands.js';
 
 const PERSIST_DELAY_MS = 200;
@@ -16,10 +26,11 @@ let statePromise = null;
 const isObj = (v) => Boolean(v) && typeof v === 'object';
 const loadState = () =>
   (statePromise ??= Promise.all([
-    chrome.storage.local.get('sites'),
+    chrome.storage.local.get(['sites', 'defaultVolume']),
     chrome.storage.session.get(['tabs', 'silenced']),
   ]).then(([local, session]) => ({
     sites: isObj(local.sites) ? local.sites : {},
+    defaultVolume: sanitizeDefault(local.defaultVolume),
     tabs: isObj(session.tabs) ? session.tabs : {},
     silenced: isObj(session.silenced) ? session.silenced : {},
   })));
@@ -42,7 +53,8 @@ const describe = (state, tabId, url) => {
   const host = siteKey(url);
   const siteRule = host ? stripMeta(state.sites[host]) : null;
   const tabRule = state.tabs[tabId] ?? null;
-  return { host, siteRule, tabRule, effective: resolveRule({ tabRule, siteRule }) };
+  const defaultRule = defaultRuleOf(state.defaultVolume);
+  return { host, siteRule, tabRule, effective: resolveRule({ tabRule, siteRule, defaultRule }) };
 };
 
 // ---- Aplicação ---------------------------------------------------------------
@@ -150,7 +162,7 @@ async function stateFor(tabId) {
   const tab = await getTab(tabId);
   if (!tab) return { ok: false, error: 'tab-not-found' };
   const info = describe(state, tabId, tab.url);
-  return { ok: true, tabId, controllable: Boolean(info.host), ...info };
+  return { ok: true, tabId, controllable: Boolean(info.host), defaultVolume: state.defaultVolume, ...info };
 }
 
 const handlers = {
@@ -247,12 +259,32 @@ const handlers = {
     return { ok: true, item: playingItem(state, tab) };
   },
 
+  // Muda o volume padrão e aplica na hora só às abas sem regra de aba nem de site.
+  async setDefault({ volume }) {
+    if (volume !== null && (typeof volume !== 'number' || !Number.isFinite(volume))) {
+      return { ok: false, error: 'invalid' };
+    }
+    const state = await loadState();
+    const tabs = await chrome.tabs.query({});
+    const next = sanitizeDefault(volume);
+    const usesDefault = (t) => describe(state, t.id, t.url).effective.source.startsWith('default');
+    const affected = tabs.filter(usesDefault);
+    state.defaultVolume = next;
+    schedulePersist('local', 'defaultVolume', () => state.defaultVolume);
+    await Promise.all(affected.map((t) => applyToTab(state, t)));
+    return { ok: true, defaultVolume: state.defaultVolume };
+  },
+
+  clearDefault() {
+    return handlers.setDefault({ volume: null });
+  },
+
   async listSites() {
     const state = await loadState();
     const sites = Object.entries(state.sites)
       .map(([host, r]) => ({ host, volume: r.volume, muted: r.muted, updatedAt: r.updatedAt ?? 0 }))
       .sort((a, b) => a.host.localeCompare(b.host));
-    return { ok: true, sites };
+    return { ok: true, sites, defaultVolume: state.defaultVolume };
   },
 
   async removeSite({ host }) {

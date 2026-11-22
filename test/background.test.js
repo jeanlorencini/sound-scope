@@ -11,8 +11,10 @@ const event = () => {
 function createChrome(tabs, { local = {}, session = {} } = {}) {
   const area = (data) => ({
     data,
-    async get(key) {
-      return key in data ? { [key]: structuredClone(data[key]) } : {};
+    async get(keys) {
+      const out = {};
+      for (const key of [].concat(keys)) if (key in data) out[key] = structuredClone(data[key]);
+      return out;
     },
     async set(obj) {
       Object.assign(data, structuredClone(obj));
@@ -382,4 +384,61 @@ test('aba silenciada fechada sai da lista; mexer na regra da aba cancela o desfa
   await bg.call({ type: 'set', tabId: 2, scope: 'tab', rule: { volume: 80 } });
   await wait(260);
   assert.deepEqual(session.silenced, {});
+});
+
+// ---- Volume padrão (R5) --------------------------------------------------------
+
+test('CA5.3/5.5: mudar o padrão aplica na hora só às abas sem regra', async () => {
+  const local = {};
+  const bg = await boot(PLAYING(), { local });
+  await bg.call({ type: 'set', tabId: 1, scope: 'site', rule: { volume: 40 } }); // youtube: abas 1 e 2
+  await bg.call({ type: 'set', tabId: 5, scope: 'tab', rule: { volume: 70 } });
+  bg.sent.length = 0;
+  const res = await bg.call({ type: 'setDefault', volume: 60 });
+  assert.deepEqual(res, { ok: true, defaultVolume: 60 });
+  assert.deepEqual(bg.gains(), { 3: 0.6 }, 'só o Spotify (sem regra) muda');
+  assert.equal(bg.badges[3], '60');
+  assert.equal(bg.titles[3], 'SoundScope — volume padrão 60%');
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.equal(st.defaultVolume, 60);
+  assert.deepEqual(st.effective, { source: 'default-user', rule: { volume: 60, muted: false } });
+  await wait(260);
+  assert.equal(local.defaultVolume, 60);
+  assert.deepEqual(Object.keys(local.sites), ['youtube.com'], 'chave própria, separada de sites');
+});
+
+test('CA5.4: o padrão sobrevive a reiniciar e valores inválidos voltam a 100%', async () => {
+  let bg = await boot(TABS(), { local: { defaultVolume: 30 } });
+  let r = await bg.call({ type: 'getGain' }, { tab: { id: 3, url: 'https://open.spotify.com/' }, frameId: 0 });
+  assert.equal(r.gain, 0.3);
+  for (const bad of ['30', -5, 200, { v: 1 }]) {
+    bg = await boot(TABS(), { local: { defaultVolume: bad } });
+    r = await bg.call({ type: 'getGain' }, { tab: { id: 3, url: 'https://open.spotify.com/' }, frameId: 0 });
+    assert.equal(r.gain, 1, JSON.stringify(bad));
+  }
+  assert.equal((await bg.call({ type: 'setDefault', volume: 'x' })).ok, false);
+});
+
+test('CA5.7: "Redefinir padrão" volta a 100% e remover um site passa a usar o padrão', async () => {
+  const bg = await boot(TABS(), { local: { defaultVolume: 50 } });
+  await bg.call({ type: 'set', tabId: 3, scope: 'site', rule: { volume: 20 } });
+  const list = await bg.call({ type: 'removeSite', host: 'open.spotify.com' });
+  assert.equal(list.defaultVolume, 50);
+  assert.equal(bg.gains()[3], 0.5);
+  const res = await bg.call({ type: 'clearDefault' });
+  assert.deepEqual(res, { ok: true, defaultVolume: null });
+  assert.equal(bg.gains()[3], 1);
+  assert.equal(bg.badges[3], '');
+  assert.equal(bg.titles[3], 'SoundScope');
+  // 100% equivale a não ter padrão.
+  assert.deepEqual(await bg.call({ type: 'setDefault', volume: 100 }), { ok: true, defaultVolume: null });
+});
+
+test('CA5.8: padrão 0% silencia pelo ganho, sem regra com mudo', async () => {
+  const bg = await boot(TABS());
+  await bg.call({ type: 'setDefault', volume: 0 });
+  assert.equal(bg.gains()[3], 0);
+  assert.equal(bg.badges[3], '×');
+  const st = await bg.call({ type: 'getState', tabId: 3 });
+  assert.deepEqual(st.effective.rule, { volume: 0, muted: false });
 });

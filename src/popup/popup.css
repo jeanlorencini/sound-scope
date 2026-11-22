@@ -438,6 +438,35 @@ body.is-muted .slider {
   color: var(--danger);
 }
 
+/* Volume padrão */
+.default-box {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 10px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.default-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.default-head output {
+  font-variant-numeric: tabular-nums;
+}
+
+.default-box .slider {
+  margin: 2px 0 4px;
+}
+
+.default-box p {
+  margin: 0 0 4px;
+}
+
 /* Só para leitores de tela */
 .sr-only {
   position: absolute;

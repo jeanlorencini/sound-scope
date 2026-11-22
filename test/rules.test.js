@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_RULE,
   badgeText,
+  defaultRuleOf,
   clampVolume,
   gainOf,
   isDefaultRule,
   resolveRule,
+  sanitizeDefault,
   sanitizeRule,
   siteKey,
 } from '../src/lib/rules.js';
@@ -61,4 +63,27 @@ test('badgeText some no volume normal e mostra × quando mudo', () => {
   assert.equal(badgeText({ volume: 0, muted: false }), '×');
   assert.ok(isDefaultRule(null));
   assert.ok(!isDefaultRule({ volume: 100, muted: true }));
+});
+
+// ---- Volume padrão (R5) --------------------------------------------------------
+
+test('CA5.1: precedência aba > site > padrão do usuário > 100%', () => {
+  const tabRule = { volume: 10, muted: false };
+  const siteRule = { volume: 20, muted: false };
+  const defaultRule = defaultRuleOf(60);
+  assert.equal(resolveRule({ tabRule, siteRule, defaultRule }).source, 'tab');
+  assert.equal(resolveRule({ siteRule, defaultRule }).source, 'site');
+  assert.deepEqual(resolveRule({ defaultRule }), { source: 'default-user', rule: { volume: 60, muted: false } });
+  assert.deepEqual(resolveRule({ defaultRule: null }), { source: 'default', rule: DEFAULT_RULE });
+});
+
+test('CA5.4/5.8: sanitizeDefault aceita só 0..100 e trata 100 como "sem padrão"', () => {
+  assert.equal(sanitizeDefault(60), 60);
+  assert.equal(sanitizeDefault(0), 0);
+  assert.equal(sanitizeDefault(42.6), 43);
+  assert.equal(sanitizeDefault(100), null);
+  for (const bad of [undefined, null, '60', NaN, Infinity, -1, 101, {}, true]) assert.equal(sanitizeDefault(bad), null, String(bad));
+  assert.deepEqual(defaultRuleOf(0), { volume: 0, muted: false });
+  assert.equal(badgeText(defaultRuleOf(0)), '×');
+  assert.equal(badgeText(defaultRuleOf(60)), '60');
 });

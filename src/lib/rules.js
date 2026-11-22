@@ -1,6 +1,6 @@
 // Regras de volume: lógica pura, sem dependência das APIs do Chrome.
 // Uma regra é { volume: 0..100, muted: boolean }.
-// Prioridade: regra da aba > regra do site > padrão (100%).
+// Prioridade: regra da aba > regra do site > volume padrão do usuário > 100%.
 
 export const DEFAULT_RULE = Object.freeze({ volume: 100, muted: false });
 
@@ -38,11 +38,24 @@ export function isDefaultRule(rule) {
 }
 
 /** Decide qual regra vale. */
-export function resolveRule({ tabRule, siteRule } = {}) {
+export function resolveRule({ tabRule, siteRule, defaultRule } = {}) {
   if (tabRule) return { source: 'tab', rule: tabRule };
   if (siteRule) return { source: 'site', rule: siteRule };
+  if (defaultRule) return { source: 'default-user', rule: defaultRule };
   return { source: 'default', rule: DEFAULT_RULE };
 }
+
+/**
+ * Volume padrão do usuário: inteiro 0..100, ou null se inválido/ausente.
+ * 100 equivale a não ter padrão. O padrão nunca tem mudo.
+ */
+export function sanitizeDefault(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) return null;
+  const v = Math.round(value);
+  return v === 100 ? null : v;
+}
+
+export const defaultRuleOf = (volume) => (volume == null ? null : { volume, muted: false });
 
 /** Fator multiplicador aplicado ao áudio da página (0..1). */
 export function gainOf(rule) {

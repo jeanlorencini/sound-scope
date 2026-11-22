@@ -27,6 +27,9 @@ const el = {
   playingEmpty: $('playingEmpty'),
   playingLive: $('playingLive'),
   silenceOthers: $('silenceOthers'),
+  defaultSlider: $('defaultSlider'),
+  defaultValue: $('defaultValue'),
+  defaultReset: $('defaultReset'),
 };
 
 const send = (msg) => chrome.runtime.sendMessage(msg);
@@ -38,31 +41,42 @@ let rule = { ...DEFAULT_RULE }; // regra sendo editada no escopo atual
 
 const hostLabel = (host) => (host === 'file://' ? 'Arquivos locais' : host);
 
+const defaultRule = () => (st && st.defaultVolume != null ? { volume: st.defaultVolume, muted: false } : DEFAULT_RULE);
+
 const ruleFor = (s) =>
-  s === 'tab' ? st.tabRule ?? { ...st.effective.rule } : st.siteRule ?? { ...DEFAULT_RULE };
+  s === 'tab' ? st.tabRule ?? { ...st.effective.rule } : st.siteRule ?? { ...defaultRule() };
 
 const describeRule = (r) => (r.muted || r.volume === 0 ? 'silenciado' : `${r.volume}%`);
 
 // ---- Envio com uma requisição por vez (a última sempre vence) ----------------
-let inFlight = false;
-let queued = null;
-async function pushRule() {
-  queued = { type: 'set', tabId, scope, rule: { ...rule } };
-  if (inFlight) return;
-  inFlight = true;
-  while (queued) {
-    const msg = queued;
-    queued = null;
-    try {
-      const res = await send(msg);
-      if (res && res.ok) st = res;
-    } catch {
-      /* service worker reiniciando: a próxima interação reenvia */
+function latestOnly(onResult, onIdle) {
+  let inFlight = false;
+  let queued = null;
+  return async (msg) => {
+    queued = msg;
+    if (inFlight) return;
+    inFlight = true;
+    while (queued) {
+      const next = queued;
+      queued = null;
+      try {
+        onResult(await send(next));
+      } catch {
+        /* service worker reiniciando: a próxima interação reenvia */
+      }
     }
-  }
-  inFlight = false;
-  renderMeta();
+    inFlight = false;
+    onIdle?.();
+  };
 }
+
+const sendRule = latestOnly(
+  (res) => {
+    if (res && res.ok) st = res;
+  },
+  () => renderMeta()
+);
+const pushRule = () => sendRule({ type: 'set', tabId, scope, rule: { ...rule } });
 
 let frame = 0;
 const scheduleCommit = () => {
@@ -98,8 +112,8 @@ function renderMeta() {
   el.override.hidden = !(scope === 'site' && st.tabRule);
 
   const { source, rule: active } = st.effective;
-  el.status.textContent =
-    source === 'default' ? 'Volume normal' : `Tocando em ${describeRule(active)} · ${source === 'tab' ? 'regra da aba' : 'regra do site'}`;
+  const origin = { tab: 'regra da aba', site: 'regra do site', 'default-user': 'volume padrão' }[source];
+  el.status.textContent = source === 'default' ? 'Volume normal' : `Tocando em ${describeRule(active)} · ${origin}`;
 
   const hasRule = scope === 'tab' ? Boolean(st.tabRule) : Boolean(st.siteRule);
   el.reset.hidden = !hasRule;
@@ -109,7 +123,9 @@ function renderMeta() {
       : 'Salvo para o site'
     : scope === 'tab'
       ? 'Mexa no volume para criar a regra da aba'
-      : 'Mexa no volume para salvar no site';
+      : st.defaultVolume != null
+        ? 'Usando o volume padrão — mexa para salvar no site'
+        : 'Mexa no volume para salvar no site';
 }
 
 function selectScope(next) {
@@ -205,6 +221,35 @@ function renderSites(sites) {
   el.sitesEmpty.hidden = sites.length > 0;
 }
 
+// ---- Volume padrão ---------------------------------------------------------------
+function renderDefault(volume) {
+  const v = volume ?? 100;
+  el.defaultSlider.value = String(v);
+  el.defaultSlider.style.setProperty('--pct', `${v}%`);
+  el.defaultSlider.setAttribute('aria-valuetext', v === 0 ? '0% (silenciado)' : `${v}%`);
+  el.defaultValue.textContent = `${v}%`;
+  el.defaultReset.hidden = volume == null;
+}
+
+let defaultChanged = false;
+const sendDefault = latestOnly((res) => {
+  if (res && res.ok) el.defaultReset.hidden = res.defaultVolume == null;
+});
+
+el.defaultSlider.addEventListener('input', () => {
+  const v = clampVolume(el.defaultSlider.valueAsNumber);
+  renderDefault(v === 100 ? null : v);
+  defaultChanged = true;
+  sendDefault({ type: 'setDefault', volume: v });
+});
+
+el.defaultReset.addEventListener('click', () => {
+  renderDefault(null);
+  defaultChanged = true;
+  sendDefault({ type: 'clearDefault' });
+  el.defaultSlider.focus();
+});
+
 el.sitesToggle.addEventListener('click', async () => {
   const open = el.sitesView.hidden;
   el.sitesView.hidden = !open;
@@ -213,6 +258,10 @@ el.sitesToggle.addEventListener('click', async () => {
   if (open) {
     const res = await send({ type: 'listSites' });
     renderSites(res && res.ok ? res.sites : []);
+    renderDefault(res && res.ok ? res.defaultVolume : null);
+  } else if (defaultChanged) {
+    defaultChanged = false;
+    await refresh();
   } else {
     selectScope(scope);
   }

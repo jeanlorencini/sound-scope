@@ -12,7 +12,7 @@
         <img src="../../icons/icon32.png" alt="" width="20" height="20" />
         <span>SoundScope</span>
       </div>
-      <button id="sitesToggle" class="icon-btn" type="button" aria-label="Sites salvos" title="Sites salvos" aria-expanded="false">
+      <button id="sitesToggle" class="icon-btn" type="button" aria-label="Sites salvos e volume padrão" title="Sites salvos e volume padrão" aria-expanded="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
       </button>
     </header>
@@ -88,6 +88,16 @@
 
     <!-- Sites salvos -->
     <section id="sitesView" hidden>
+      <div class="default-box">
+        <div class="default-head">
+          <label for="defaultSlider">Volume padrão</label>
+          <output id="defaultValue" for="defaultSlider">100%</output>
+        </div>
+        <input id="defaultSlider" class="slider" type="range" min="0" max="100" step="1" value="100" aria-describedby="defaultHint" />
+        <p id="defaultHint" class="muted-text">Vale para todos os sites que ainda não têm volume salvo. Sites salvos e abas com volume próprio não mudam.</p>
+        <button id="defaultReset" type="button" class="link" hidden>Redefinir padrão</button>
+      </div>
+
       <h2>Sites salvos</h2>
       <p class="muted-text">O volume vale em todas as abas desses sites.</p>
       <ul id="sitesList" class="sites"></ul>
